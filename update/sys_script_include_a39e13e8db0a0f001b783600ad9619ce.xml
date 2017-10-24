@@ -1,0 +1,432 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<record_update table="sys_script_include">
+    <sys_script_include action="INSERT_OR_UPDATE">
+        <access>public</access>
+        <active>true</active>
+        <api_name>x_snc_aws_request.AWSRequest</api_name>
+        <client_callable>false</client_callable>
+        <description/>
+        <name>AWSRequest</name>
+        <script><![CDATA[/**
+ * AWSRequest
+ * Usage:
+ *	 var response = new x_snc_aws_request.AWSRequest()
+ *		.setMethod('post')
+ *		.setDebug(true)
+ *		.setEndpoint('https://inspector.us-east-1.amazonaws.com/')
+ *		.setHeaderParam('X-Amz-Target', 'InspectorService.DescribeFindings')
+ *		.setHeaderParam('Content-Type', 'application/x-amz-json-1.1')
+ *		.setContent('{"findingArns":["'+findingArn+'"]}')
+ *		.setAccessKey(accessKey)
+ *		.setSecretKey(secretKey)
+ *		.execute();
+ *	gs.print(response.getBody());
+ *
+ */
+var AWSRequest = Class.create();
+AWSRequest.prototype = {
+    initialize: function() {
+		this.amzalgorithm = 'AWS4-HMAC-SHA256';
+		this.debugEnabled = false;
+		this.headers = [];
+		this.parameters = [];
+		
+		return this;
+    },
+	
+	/**
+	 * Setters
+	 */
+	setEndpoint: function(endpoint) {
+		this.endpoint = endpoint;
+		return this;
+	},
+	
+	setQueryParam: function(name, value) {
+		this.parameters[name] = value;
+		return this;
+	},
+	
+	setMethod: function(method) {
+		this.method = gs.nil(method) ? '' : method.toUpperCase();
+		return this;
+	},
+	
+	// Scope issues make this unusable at the moment, use setAccessKey/setSecretKey
+	setCredential: function(credentialGr) {
+		this.accessKey = credentialGr.access_key;
+		this.secretKey = credentialGr.secret_key.getDecryptedValue();
+		return this;
+	},
+	
+	setCredentialId: function(credentialId) {
+		var credentialGr =  new GlideRecord('aws_credentials');
+		if (credentialGr.get(credentialId))
+			this.setCredential(credentialGr);
+		return this;
+	},
+	
+	setAccessKey: function(accessKey) {
+		this.accessKey = accessKey;
+		return this;
+	},
+	
+	setSecretKey: function(secretKey) {
+		this.secretKey = secretKey;
+		return this;
+	},
+	
+	setHeaderParam: function(name, value) {
+		this.headers[name] = value;
+		return this;
+	},
+	
+	setContent: function(content) {
+		this.content = content;
+		return this;
+	},
+	
+	setDebug: function(maybe) {
+		this.debugEnabled = maybe;
+		return this;
+	},
+	
+	/**
+	 * Money maker
+	 */
+	execute: function() {
+		this._preFlightChecks();
+		var authHeader = this._getAuthorization(this.method, this.endpoint, this.headers, this.parameters, this.accessKey, this.secretKey);
+		this.setHeaderParam('Authorization', authHeader);
+
+		var restCall = new sn_ws.RESTMessageV2();
+		restCall.setEndpoint(this.endpoint);
+		restCall.setHttpMethod(this.method);
+		for (var headerName in this.headers)
+			restCall.setRequestHeader(headerName, this.headers[headerName]);
+		for (var paramName in this.parameters)
+			restCall.setQueryParameter(paramName, this.parameters[paramName]);
+		if (!gs.nil(this.content))
+			restCall.setRequestBody(this.content);
+		var response = restCall.execute();
+		
+		return response;
+	},
+	
+	_preFlightChecks: function() {
+		if (gs.nil(this.method))
+			throw 'AmazonREST: method not defined - use setMethod(method)';
+		if (gs.nil(this.endpoint))
+			throw 'AmazonREST: endpoint not defined - use setEndpoint(endpoint)';
+		if (gs.nil(this.accessKey) || gs.nil(this.secretKey))
+			throw 'AmazonREST: credential not defined - use setCredential(credentialGr) or setCredentialId(credentialId)';
+		
+		var gdt = new GlideDateTime();
+		this.dateTimeString = gdt.getDate().getByFormat('yyyyMMdd') + 'T' + gdt.getTime().getByFormat('HHmmss') + 'Z';
+		this.dateString = gdt.getDate().getByFormat('yyyyMMdd');
+		this.setHeaderParam('host', this._getHost(this.endpoint));	
+		this.setHeaderParam('x-amz-date', this.dateTimeString);
+	},
+	
+	/**
+	 * Signing
+	 */
+	_getAuthorization: function(method, endpoint, headers, parameters, accessKey, secretKey) {
+		var canonicalRequest = this._getCanonicalRequest(method, endpoint, headers, parameters);
+		var credentialScope = this._getCredentialScopeString(endpoint);
+		var stringToSign = this._getStringToSign(endpoint, canonicalRequest);
+		var signedHeaders = this._getSignedHeaders(headers);
+		var signature = this._getSignature(endpoint, stringToSign, secretKey);
+		
+		this.debug('Getting authorization:');
+		this.debug('canonicalRequest: ' + canonicalRequest);
+		this.debug('credentialScope: ' + credentialScope);
+		this.debug('stringToSign: ' + stringToSign);
+		this.debug('signedHeaders: ' + signedHeaders);
+		this.debug('signature: ' + signature);
+		
+		var authorization = this.amzalgorithm + ' ';
+		authorization += 'Credential=' + accessKey + '/' + credentialScope + ', '; 
+		authorization += 'SignedHeaders=' + signedHeaders + ', ' ;
+		authorization += 'Signature=' + signature;
+		
+		this.debug('Authorization: ' + authorization);
+
+        return authorization;
+	},
+	
+	/**
+	 * Task 1: Create a Canonical Request for Signature Version 4
+	 *
+	 * From http://docs.aws.amazon.com/general/latest/gr/sigv4-create-canonical-request.html:
+	 *   CanonicalRequest =
+	 *       HTTPRequestMethod + '\n' +
+	 *       CanonicalURI + '\n' +
+	 *       CanonicalQueryString + '\n' +
+	 *       CanonicalHeaders + '\n' +
+	 *       SignedHeaders + '\n' +
+	 *       HexEncode(Hash(RequestPayload))
+	 */
+	_getCanonicalRequest: function(method, endpoint, headers, parameters) {
+		var canonicalURI = this._getCanonicalURI(endpoint);
+		var canonicalQueryString = this._getCanonicalQueryString(parameters);
+		var canonicalHeaders = this._getCanonicalHeaders(headers);
+		var signedHeaders = this._getSignedHeaders(headers);
+		var hashedPayload = this._getHashedPayload(method == 'POST' ? this.content : '');
+		
+		this.debug('Generate canonical request:');
+		this.debug('method: ' + method);
+		this.debug('canonicalURI: ' + canonicalURI);
+		this.debug('canonicalQueryString: ' + canonicalQueryString);
+		this.debug('canonicalHeaders: ' + canonicalHeaders);
+		this.debug('signedHeaders: ' + signedHeaders);
+		this.debug('hashedPayload: ' + hashedPayload);
+		
+		var canonicalRequest = [];
+		canonicalRequest.push(method);
+		canonicalRequest.push(canonicalURI);
+		canonicalRequest.push(method == 'POST' ? '' : canonicalQueryString);
+		canonicalRequest.push(canonicalHeaders);
+		canonicalRequest.push(signedHeaders);
+		canonicalRequest.push(hashedPayload);
+		
+		var canonicalRequestString = canonicalRequest.join('\n');
+		
+		this.debug('canonicalRequestString: ' + canonicalRequestString);
+		
+		var encodedHash = new x_snc_scrypto.Scrypto().SHA256(canonicalRequestString);
+		return encodedHash;
+	},
+	
+	_getCanonicalURI: function(endpoint) {
+		var absolutePath = this._getAbsolutePath(endpoint);
+		var encodedAbsolutePath = encodeURIComponent(absolutePath);
+		var canonicalUri = '/' + encodedAbsolutePath;
+		return canonicalUri;
+	},
+	
+	/**
+	 * Endpoint: https://cloudformation.us-east-2.aws.com/somepath
+	 * Returns: /somepath
+	 */
+	_getAbsolutePath: function(endpoint) {
+		var uri = this._getURI(endpoint);
+		if(gs.nil(uri))
+			return '';
+		
+		var host = this._getHost(endpoint);
+		var absolutePath = uri.substring(host.length);
+		absolutePath = (absolutePath === '/') ? '' : absolutePath;
+		return absolutePath;
+	},
+
+	/**
+	 * Endpoint: https://cloudformation.us-east-2.aws.com/somepath
+	 * Returns: cloudformation.us-east-2.aws.com/somepath
+	 */
+	 _getURI: function(endpoint) {
+		var match = /https:\/\/(.*)/.exec(endpoint);
+		var uri = match ? match[1] : '';
+		return uri;
+	},
+	
+	/**
+	 * Endpoint: https://cloudformation.us-east-2.aws.com/somepath
+	 * Returns: cloudformation.us-east-2.aws.com
+	 */
+	 _getHost: function(endpoint) {
+		var uri = this._getURI(endpoint);
+		var host = gs.nil(uri) ? '' : uri.split('/')[0];
+		return host;
+	},
+	
+	/**
+	 * Parameter string is params sorted and URL encoded on both sides of name=value,
+	 * separated by &
+	 */
+	_getCanonicalQueryString: function(parameters) {
+		var sortedParameters = this._getSortedObject(parameters);
+		var paramArr = [];
+		
+		for (var sortedName in sortedParameters) {
+			var name = encodeURIComponent(sortedName);
+			var value = encodeURIComponent(sortedParameters[sortedName]);
+			paramArr.push(name + '=' + value);
+		}
+		
+		var canonicalQueryString = paramArr.join('&');
+		return canonicalQueryString;
+	},
+
+	_getSortedObject: function(obj) {
+		var sortedObject = {};
+		
+		// Parameters need to be sorted by ascending ASCII code
+		var sortedNames = Object.keys(obj).sort();
+		for (var i = 0; i < sortedNames.length; i++) {
+			var name = sortedNames[i];
+			var value = obj[name];
+			sortedObject[name] = value;
+		}
+		
+		return sortedObject;
+	},
+
+	/**
+	 * lowercase header name, trim value, convert multiple spaces to single
+	 * sort, colon between name/value, and separate with newline
+	 */
+	_getCanonicalHeaders: function(headers) {
+		var normalizedHeaders = {};
+		for (var name in headers) {
+			var value = '' + headers[name].trim();
+			normalizedHeaders[name.toLowerCase()] = value.replace(/ {1,}/g, ' ');
+		}
+		
+		var sortedHeaders = this._getSortedObject(normalizedHeaders);
+		var headerArr = [];
+
+		for (var sortedName in sortedHeaders)
+			headerArr.push(sortedName + ':' + sortedHeaders[sortedName]);
+		
+		// Every header ends with a newline, so tack one on the end
+		var canonicalHeaders = headerArr.join('\n') + '\n';
+		return canonicalHeaders;
+	},
+
+	/**
+	 * Signed headers are lowercase header name, sorted, and separated with semicolon
+	 */
+	_getSignedHeaders: function(headers) {
+		var lowercaseHeaders = {};
+		for (var name in headers)
+			lowercaseHeaders[name.toLowerCase()] = headers[name];
+		
+		var sortedHeaders = this._getSortedObject(lowercaseHeaders);
+		var headerArr = [];
+		for (var sortedName in sortedHeaders)
+			headerArr.push(sortedName);
+		
+		return headerArr.join(';');
+	},
+	
+	/**
+	 * Hex encoded hashed payload
+	 */
+	_getHashedPayload: function(payload) {
+		var content = '';
+		if (!gs.nil(payload))
+			content = payload;
+		
+		var encodedHash = new x_snc_scrypto.Scrypto().SHA256(content);
+		return encodedHash;
+	},
+	
+	_getCredentialScopeString: function(endpoint) {
+		var service = this._getService(endpoint);
+		var region = this._getRegion(endpoint);
+		var dateStr = this.dateString;
+		
+		var credentialScopeString = [];
+		credentialScopeString.push(dateStr);
+		credentialScopeString.push(region);
+		credentialScopeString.push(service);
+		credentialScopeString.push('aws4_request');
+
+		return credentialScopeString.join('/');
+    },
+	
+	/**
+	 * Endpoint: https://cloudformation.us-east-2.aws.com/somepath
+	 * Returns: cloudformation
+	 */
+	_getService: function(endpoint) {
+		var host = this._getHost(endpoint);
+        return host.split('.')[0];
+    },
+	
+	/**
+	 * Endpoint: https://cloudformation.us-east-2.aws.com/somepath
+	 * Returns: us-east-2
+	 */
+	_getRegion: function(endpoint) {		 
+		var host = this._getHost(endpoint);
+		if (gs.nil(host))
+			return '';
+		
+		var parts = host.split('.'); 
+		var service = parts[0];		
+		
+		if (parts.length > 1) {
+			var region = parts[1];
+			return region;
+		} else
+			return 'us-east-1';
+    },
+	
+	/**
+	 * Task 2: Create a String to Sign for Signature Version 4
+	 *
+	 * StringToSign  =
+	 *     Algorithm + '\n' +
+	 *     RequestDate + '\n' +
+	 *     CredentialScope + '\n' +
+	 *     HashedCanonicalRequest))
+	 */
+	_getStringToSign: function(endpoint, canonicalRequest) {
+		var dateTimeString = this.dateTimeString;
+		var credentialScopeString = this._getCredentialScopeString(endpoint);
+		
+		var stringToSign = [];
+		stringToSign.push(this.amzalgorithm);
+		stringToSign.push(dateTimeString);
+		stringToSign.push(credentialScopeString);
+		stringToSign.push(canonicalRequest);
+		
+		return stringToSign.join('\n');
+	},
+	
+	/** 
+	 * Task 3: Calculate the Signature for AWS Signature Version 4
+	 */
+	_getSignature: function(endpoint, stringToSign, secretKey) {
+		var service = this._getService(endpoint);
+		var region = this._getRegion(endpoint);
+		var dateString = this.dateString;
+
+		var signatureKey = this._getSignatureKey(secretKey, dateString, region, service);
+		var signature = new x_snc_scrypto.Scrypto().HmacSHA256(stringToSign, signatureKey);
+		
+		return signature; 
+	},
+	
+	_getSignatureKey: function(secretKey, dateString, region, service) {
+		var kSecret = 'AWS4' + secretKey;
+		var kDate = new x_snc_scrypto.Scrypto().HmacSHA256(dateString, kSecret);
+		var kRegion = new x_snc_scrypto.Scrypto().HmacSHA256(region, kDate);
+		var kService = new x_snc_scrypto.Scrypto().HmacSHA256(service, kRegion);
+		var kSigning = new x_snc_scrypto.Scrypto().HmacSHA256('aws4_request', kService);
+		return kSigning;
+	},
+	
+	debug: function(value) {
+		if (this.debugEnabled)
+			gs.info(value);
+	},
+
+    type: 'AWSRequest'
+};]]></script>
+        <sys_class_name>sys_script_include</sys_class_name>
+        <sys_created_by>ben.yukich</sys_created_by>
+        <sys_created_on>2017-10-23 19:59:50</sys_created_on>
+        <sys_id>a39e13e8db0a0f001b783600ad9619ce</sys_id>
+        <sys_mod_count>27</sys_mod_count>
+        <sys_name>AWSRequest</sys_name>
+        <sys_package display_value="AWS Request" source="x_snc_aws_request">1fbd1f68db0a0f001b783600ad9619cf</sys_package>
+        <sys_policy>read</sys_policy>
+        <sys_scope display_value="AWS Request">1fbd1f68db0a0f001b783600ad9619cf</sys_scope>
+        <sys_update_name>sys_script_include_a39e13e8db0a0f001b783600ad9619ce</sys_update_name>
+        <sys_updated_by>ben.yukich</sys_updated_by>
+        <sys_updated_on>2017-10-24 02:22:37</sys_updated_on>
+    </sys_script_include>
+</record_update>
