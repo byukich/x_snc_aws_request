@@ -5,19 +5,19 @@
         <source_scope display_value="AWS Request">1fbd1f68db0a0f001b783600ad9619cf</source_scope>
         <status>allowed</status>
         <sys_class_name>sys_scope_privilege</sys_class_name>
-        <sys_created_by>ben.yukich</sys_created_by>
-        <sys_created_on>2017-10-23 21:40:10</sys_created_on>
-        <sys_id>218398b0db0e0f001b783600ad9619bb</sys_id>
-        <sys_mod_count>2</sys_mod_count>
-        <sys_name>Scrypto</sys_name>
+        <sys_created_by>Shaun.Millin</sys_created_by>
+        <sys_created_on>2017-10-24 16:22:21</sys_created_on>
+        <sys_id>fd245401db8e4340e3b5f9b61d9619ba</sys_id>
+        <sys_mod_count>0</sys_mod_count>
+        <sys_name>What</sys_name>
         <sys_package display_value="AWS Request" source="x_snc_aws_request">1fbd1f68db0a0f001b783600ad9619cf</sys_package>
         <sys_policy/>
         <sys_scope display_value="AWS Request">1fbd1f68db0a0f001b783600ad9619cf</sys_scope>
-        <sys_update_name>sys_scope_privilege_218398b0db0e0f001b783600ad9619bb</sys_update_name>
+        <sys_update_name>sys_scope_privilege_fd245401db8e4340e3b5f9b61d9619ba</sys_update_name>
         <sys_updated_by>Shaun.Millin</sys_updated_by>
-        <sys_updated_on>2017-10-24 16:20:42</sys_updated_on>
-        <target_name>Scrypto</target_name>
-        <target_scope display_value="Scrypto">fab3ab20db4a0f001b783600ad9619b8</target_scope>
+        <sys_updated_on>2017-10-24 16:22:21</sys_updated_on>
+        <target_name>What</target_name>
+        <target_scope display_value="Global">global</target_scope>
         <target_type>sys_script_include</target_type>
     </sys_scope_privilege>
 </record_update>
